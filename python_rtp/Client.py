@@ -75,17 +75,39 @@ class Client:
         self.label.grid(row=0, column=0, columnspan=4,
                         sticky=W+E+N+S, padx=5, pady=5)
 
+    # Xử lí khi nhấn nút Setup
     def setupMovie(self):
-        """Setup button handler."""
-        if self.state == self.INIT:
+        """
+        SETUP chỉ được thực hiện khi client đang ở trạng thái INIT
+        (chưa tạo phiên RTSP với server).
+        """
+
+        # Chỉ cho phép SETUP khi đang ở trạng thái INIT
+        if self.state != self.INIT:
+            return
+
+        # Kiểm tra chế độ chất lượng video
+        # - is_hd = True  -> SETUP video HD
+        # - is_hd = False -> SETUP video SD
+        if self.is_hd:
+            # Gửi yêu cầu SETUP_HD lên server
+            # Mục đích: yêu cầu server chuẩn bị stream video HD
+            self.sendRtspRequest(self.SETUP_HD)
+        else:
+            # Gửi yêu cầu SETUP thường (SD)
+            # Mục đích: yêu cầu server chuẩn bị stream video chất lượng thường
             self.sendRtspRequest(self.SETUP)
 
+    #Xử lí khi nhấn nút Teardown / thoát chương trình
     def exitClient(self):
-        """Teardown button handler."""
+        """
+        - Gửi TEARDOWN lên server
+        - Đóng giao diện Client
+        """
         self.sendRtspRequest(self.TEARDOWN)
-        self.master.destroy()  # Close the gui window
-        # Delete the cache image from video
-        os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT)
+        self.master.destroy()
+
+        
     # Xử lí khi nhấn nút Pause
     def pauseMovie(self):
         # Chỉ xử lý khi đang ở trạng thái PLAYING
@@ -107,6 +129,7 @@ class Client:
             # Chuyển trạng thái về READY
             # READY trong trường hợp này = “đang Fake Pause”
             self.state = self.READY
+            
     # Xử lí khi nhấn nút Play
     def playMovie(self):
         # Chỉ xử lý khi đang ở trạng thái READY
