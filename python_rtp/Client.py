@@ -43,6 +43,9 @@ class Client:
         self.teardownAcked = 0
         self.connectToServer()
         self.frameNbr = 0
+        self.is_hd = False  # Giả định mặc định là SD
+        self.SETUP_HD = 4  # Định nghĩa hằng số cho SETUP HD (nếu có)
+        self.is_server_sending = False  # Biến trạng thái để kiểm soát Fake Pause/Resume
 
     def createWidgets(self):
         """Build GUI."""
@@ -229,61 +232,79 @@ class Client:
 
     def sendRtspRequest(self, requestCode):
         """Send RTSP request to the server."""
-        # -------------
-        # TO COMPLETE
-        # -------------
 
         # Setup request
-        if requestCode == self.SETUP and self.state == self.INIT:
+        request = ""  # Khởi tạo biến request
+
+        # Khối xử lý SETUP (Bao gồm cả SETUP thường và SETUP_HD)
+        if (requestCode == self.SETUP or requestCode == self.SETUP_HD) and self.state == self.INIT:
+            # Khởi động luồng nhận phản hồi từ Server
             threading.Thread(target=self.recvRtspReply).start()
-            # Update RTSP sequence number.
-            # ...
 
-            # Write the RTSP request to be sent.
-            # request = ...
+            # 1. Update RTSP sequence number.
+            self.rtspSeq += 1
 
-            # Keep track of the sent request.
-            # self.requestSent = ...
+            # 2. Write the RTSP request to be sent.
+            request = "SETUP " + self.fileName + " RTSP/1.0\n"
+            request += "CSeq: " + str(self.rtspSeq) + "\n"
+            request += "Transport: RTP/UDP; client_port=" + str(self.rtpPort)
+
+            # LOGIC TÙY CHỈNH CHO HD
+            if requestCode == self.SETUP_HD:
+                request += "\nQuality: HD"  # Thêm header xuống dòng
+
+            # 3. Keep track of the sent request.
+            self.requestSent = requestCode  # <-- SỬA LỖI: Lưu mã lệnh thực tế (SETUP hoặc SETUP_HD)
 
         # Play request
         elif requestCode == self.PLAY and self.state == self.READY:
-            # Update RTSP sequence number.
-            # ...
+            # 1. Update RTSP sequence number.
+            self.rtspSeq += 1
 
-            # Write the RTSP request to be sent.
-            # request = ...
+            # 2. Write the RTSP request to be sent.
+            # Yêu cầu PLAY cần Session ID đã nhận được từ SETUP
+            request = "PLAY " + self.fileName + " RTSP/1.0\n"
+            request += "CSeq: " + str(self.rtspSeq) + "\n"
+            request += "Session: " + str(self.sessionId)
 
-            # Keep track of the sent request.
-            # self.requestSent = ...
+            # 3. Keep track of the sent request.
+            self.requestSent = self.PLAY
 
-            # Pause request
+        # Pause request (Lưu ý: Logic pauseMovie() trong code của bạn dùng "Fake Pause"
+        # nên request này chỉ được gửi khi bạn thay đổi logic pauseMovie)
         elif requestCode == self.PAUSE and self.state == self.PLAYING:
-            # Update RTSP sequence number.
-            # ...
+            # 1. Update RTSP sequence number.
+            self.rtspSeq += 1
 
-            # Write the RTSP request to be sent.
-            # request = ...
+            # 2. Write the RTSP request to be sent.
+            request = "PAUSE " + self.fileName + " RTSP/1.0\n"
+            request += "CSeq: " + str(self.rtspSeq) + "\n"
+            request += "Session: " + str(self.sessionId)
 
-            # Keep track of the sent request.
-            # self.requestSent = ...
+            # 3. Keep track of the sent request.
+            self.requestSent = self.PAUSE
 
-            # Teardown request
+        # Teardown request
         elif requestCode == self.TEARDOWN and not self.state == self.INIT:
-            # Update RTSP sequence number.
-            # ...
+            # 1. Update RTSP sequence number.
+            self.rtspSeq += 1
 
-            # Write the RTSP request to be sent.
-            # request = ...
+            # 2. Write the RTSP request to be sent.
+            request = "TEARDOWN " + self.fileName + " RTSP/1.0\n"
+            request += "CSeq: " + str(self.rtspSeq) + "\n"
+            request += "Session: " + str(self.sessionId)
 
-            # Keep track of the sent request.
-            # self.requestSent = ...
+            # 3. Keep track of the sent request.
+            self.requestSent = self.TEARDOWN
         else:
             return
 
         # Send the RTSP request using rtspSocket.
-        # ...
-
-        print('\nData sent:\n' + request)
+        try:
+            self.rtspSocket.send(request.encode("utf-8"))
+            print('\nData sent:\n' + request)
+        except:
+            tkMessageBox.showwarning('Send Error', 'Could not send RTSP request.')
 
     def recvRtspReply(self):
         """Receive RTSP reply from the server."""
@@ -314,42 +335,37 @@ class Client:
             # Process only if the session ID is the same
             if self.sessionId == session:
                 if int(lines[0].split(' ')[1]) == 200:
-                    if self.requestSent == self.SETUP:
-                        # -------------
-                        # TO COMPLETE
-                        # -------------
+                    if self.requestSent == self.SETUP or self.requestSent == self.SETUP_HD:
                         # Update RTSP state.
-                        # self.state = ...
-
+                        self.state = self.READY
                         # Open RTP port.
                         self.openRtpPort()
                     elif self.requestSent == self.PLAY:
-                        # self.state = ...
+                        self.state = self.PLAYING  # Chuyển trạng thái sang PLAYING sau PLAY thành công
                     elif self.requestSent == self.PAUSE:
-                        # self.state = ...
+                        self.state = self.READY  # Chuyển trạng thái sang READY sau PAUSE thành công
 
                         # The play thread exits. A new thread is created on resume.
                         self.playEvent.set()
                     elif self.requestSent == self.TEARDOWN:
-                        # self.state = ...
+                        self.state = self.INIT  # Chuyển trạng thái về INIT sau TEARDOWN
 
                         # Flag the teardownAcked to close the socket.
                         self.teardownAcked = 1
 
     def openRtpPort(self):
         """Open RTP socket binded to a specified port."""
-        # -------------
-        # TO COMPLETE
-        # -------------
-        # Create a new datagram socket to receive RTP packets from the server
-        # self.rtpSocket = ...
 
-        # Set the timeout value of the socket to 0.5sec
-        # ...
+        # 1. Create a new datagram socket (UDP) to receive RTP packets from the server
+        self.rtpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # SOCK_DGRAM = UDP
+
+        # 2. Set the timeout value of the socket to 0.5sec
+        self.rtpSocket.settimeout(0.5)
 
         try:
-            # Bind the socket to the address using the RTP port given by the client user
-            # ...
+            # 3. Bind the socket to the address ('', lắng nghe mọi interface)
+            # using the RTP port given by the client user
+            self.rtpSocket.bind(('', self.rtpPort))
         except:
             tkMessageBox.showwarning(
                 'Unable to Bind', 'Unable to bind PORT=%d' % self.rtpPort)
