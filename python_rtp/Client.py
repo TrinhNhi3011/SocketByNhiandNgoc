@@ -1,15 +1,9 @@
 from tkinter import *
-import tkinter.messagebox
 import tkinter.messagebox as tkMessageBox
 from PIL import Image, ImageTk
 import socket
 import threading
-import sys
-import traceback
 import os
-import io
-from random import randint
-import time
 
 from RtpPacket import RtpPacket
 
@@ -43,10 +37,9 @@ class Client:
         self.teardownAcked = 0
         self.connectToServer()
         self.frameNbr = 0
-        self.is_hd = False  # Giả định mặc định là SD
-        self.SETUP_HD = 4  # Định nghĩa hằng số cho SETUP HD (nếu có)
-        self.is_server_sending = False  # Biến trạng thái để kiểm soát Fake Pause/Resume
+        self.playEvent = threading.Event()
 
+    #GUI
     def createWidgets(self):
         """Build GUI."""
         # Create Setup button
@@ -80,103 +73,35 @@ class Client:
 
     # Xử lí khi nhấn nút Setup
     def setupMovie(self):
-        """
-        SETUP chỉ được thực hiện khi client đang ở trạng thái INIT
-        (chưa tạo phiên RTSP với server).
-        """
-
-        # Chỉ cho phép SETUP khi đang ở trạng thái INIT
-        if self.state != self.INIT:
-            return
-
-        # Kiểm tra chế độ chất lượng video
-        # - is_hd = True  -> SETUP video HD
-        # - is_hd = False -> SETUP video SD
-        if self.is_hd:
-            # Gửi yêu cầu SETUP_HD lên server
-            # Mục đích: yêu cầu server chuẩn bị stream video HD
-            self.sendRtspRequest(self.SETUP_HD)
-        else:
-            # Gửi yêu cầu SETUP thường (SD)
-            # Mục đích: yêu cầu server chuẩn bị stream video chất lượng thường
+        """Setup button handler."""
+        if self.state == self.INIT:
             self.sendRtspRequest(self.SETUP)
 
-    #Xử lí khi nhấn nút Teardown / thoát chương trình
+    # Xử lí khi nhấn nút Teardown / thoát chương trình
     def exitClient(self):
-        """
-        - Gửi TEARDOWN lên server
-        - Đóng giao diện Client
-        """
+        """Teardown button handler."""
         self.sendRtspRequest(self.TEARDOWN)
-        self.master.destroy()
+        self.master.destroy()  # Close the gui window
+        try:
+            os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT)
+        except:
+            pass
 
-        
     # Xử lí khi nhấn nút Pause
     def pauseMovie(self):
-        # Chỉ xử lý khi đang ở trạng thái PLAYING
+        """Pause button handler."""
         if self.state == self.PLAYING:
+            self.sendRtspRequest(self.PAUSE)
 
-            # Fake Pause: KHÔNG gửi lệnh PAUSE lên server
-            # Lý do: Server vẫn tiếp tục gửi RTP, nhưng client tạm thời không hiển thị
-            # Điều này giúp Play lại cực nhanh, không cần thiết lập lại luồng RTP
-
-            # Chặn thread nhận RTP bằng cách kích hoạt playEvent
-            # (thread listenRtp thấy playEvent.set() sẽ tạm dừng xử lý frame)
-            if hasattr(self, "playEvent"):
-                self.playEvent.set()
-
-            # Tắt vòng lặp UI để dừng hiển thị khung hình
-            if hasattr(self, "ui_loop_running"):
-                self.ui_loop_running = False
-
-            # Chuyển trạng thái về READY
-            # READY trong trường hợp này = “đang Fake Pause”
-            self.state = self.READY
-            
     # Xử lí khi nhấn nút Play
     def playMovie(self):
-        # Chỉ xử lý khi đang ở trạng thái READY
-        # Trạng thái READY có thể đến từ 2 trường hợp:
-        # 1. Vừa SETUP xong → server chưa gửi RTP
-        # 2. Vừa PAUSE giả → server vẫn đang gửi RTP nhưng client tạm dừng hiển thị
-
+        """Play button handler."""
         if self.state == self.READY:
-
-            # [Trường hợp 1: PLAY lần đầu tiên]
-            # Server chưa gửi RTP nên ta phải gửi PLAY thật
-            if not self.is_server_sending:
-
-                # Tạo thread nhận gói RTP từ server
-                threading.Thread(target=self.listenRtp, daemon=True).start()
-
-                # Cho phép thread nhận RTP hoạt động
-                # (playEvent.clear() nghĩa là không chặn thread)
-                self.playEvent = threading.Event()
-                self.playEvent.clear()
-
-                # Gửi yêu cầu PLAY thật lên server để bắt đầu truyền RTP
-                self.sendRtspRequest(self.PLAY)
-
-                # Đánh dấu server đã bắt đầu gửi RTP
-                self.is_server_sending = True
-
-            else:
-                # [Trường hợp 2: Resume sau Fake Pause]
-                # Trong Fake Pause, server vẫn gửi RTP đều đặn
-                # Ta KHÔNG gửi PLAY lần 2 (vì server đã phát rồi)
-                # Client chỉ cần mở lại UI và tiếp tục hiển thị khung hình
-                pass
-
-        # Chuyển sang trạng thái PLAYING cho cả hai trường hợp:
-        # 1. Lần đầu PLAY
-        # 2. Resume sau Fake Pause
-        self.state = self.PLAYING
-
-        # Khởi động vòng lặp UI nếu chưa chạy
-        # Vòng lặp UI chỉ được chạy đúng 1 lần để tránh xung đột
-        if not hasattr(self, 'ui_loop_running') or not self.ui_loop_running:
-            self.ui_loop_running = True
-            self.run_ui_loop()
+            # Create a new thread to listen for RTP packets
+            self.playEvent = threading.Event()
+            self.playEvent.clear()
+            threading.Thread(target=self.listenRtp).start()
+            self.sendRtspRequest(self.PLAY)
 
     def listenRtp(self):
         """Listen for RTP packets."""
@@ -196,7 +121,7 @@ class Client:
                             rtpPacket.getPayload()))
             except:
                 # Stop listening upon requesting PAUSE or TEARDOWN
-                if self.playEvent.isSet():
+                if self.playEvent.is_set():
                     break
 
                 # Upon receiving ACK for TEARDOWN request,
@@ -212,7 +137,6 @@ class Client:
         file = open(cachename, "wb")
         file.write(data)
         file.close()
-
         return cachename
 
     def updateMovie(self, imageFile):
@@ -236,8 +160,8 @@ class Client:
         # Setup request
         request = ""  # Khởi tạo biến request
 
-        # Khối xử lý SETUP (Bao gồm cả SETUP thường và SETUP_HD)
-        if (requestCode == self.SETUP or requestCode == self.SETUP_HD) and self.state == self.INIT:
+        # Khối xử lý SETUP
+        if requestCode == self.SETUP and self.state == self.INIT:
             # Khởi động luồng nhận phản hồi từ Server
             threading.Thread(target=self.recvRtspReply).start()
 
@@ -249,12 +173,8 @@ class Client:
             request += "CSeq: " + str(self.rtspSeq) + "\n"
             request += "Transport: RTP/UDP; client_port=" + str(self.rtpPort)
 
-            # LOGIC TÙY CHỈNH CHO HD
-            if requestCode == self.SETUP_HD:
-                request += "\nQuality: HD"  # Thêm header xuống dòng
-
             # 3. Keep track of the sent request.
-            self.requestSent = requestCode  # <-- SỬA LỖI: Lưu mã lệnh thực tế (SETUP hoặc SETUP_HD)
+            self.requestSent = requestCode  #Lưu mã lệnh SETUP
 
         # Play request
         elif requestCode == self.PLAY and self.state == self.READY:
@@ -335,13 +255,14 @@ class Client:
             # Process only if the session ID is the same
             if self.sessionId == session:
                 if int(lines[0].split(' ')[1]) == 200:
-                    if self.requestSent == self.SETUP or self.requestSent == self.SETUP_HD:
+                    if self.requestSent == self.SETUP:
                         # Update RTSP state.
                         self.state = self.READY
                         # Open RTP port.
                         self.openRtpPort()
                     elif self.requestSent == self.PLAY:
                         self.state = self.PLAYING  # Chuyển trạng thái sang PLAYING sau PLAY thành công
+
                     elif self.requestSent == self.PAUSE:
                         self.state = self.READY  # Chuyển trạng thái sang READY sau PAUSE thành công
 
@@ -349,7 +270,7 @@ class Client:
                         self.playEvent.set()
                     elif self.requestSent == self.TEARDOWN:
                         self.state = self.INIT  # Chuyển trạng thái về INIT sau TEARDOWN
-
+                        self.playEvent.set()  # DỪNG listenRtp
                         # Flag the teardownAcked to close the socket.
                         self.teardownAcked = 1
 
